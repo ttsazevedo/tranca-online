@@ -133,6 +133,9 @@ export const claimJogador = (id, authUserId) =>
 export const updateJogadorPapel = (id, papel) =>
   supabase.from("jogadores").update({ papel }).eq("id", id).select().single().then(ok);
 
+export const updateJogadorDados = (id, { nome, apelido }) =>
+  supabase.from("jogadores").update({ nome, apelido }).eq("id", id).select().single().then(ok);
+
 export const deleteJogador = (id) =>
   supabase.from("jogadores").delete().eq("id", id).then(ok);
 

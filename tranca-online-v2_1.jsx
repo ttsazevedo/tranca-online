@@ -404,6 +404,15 @@ export default function App() {
       setToast(`${apelido} adicionado ✓`);
     } catch { setToast("Não foi possível adicionar o jogador"); }
   };
+  // Editar nome/apelido (próprio, ou qualquer um se for anfitrião — RLS cobre os dois)
+  const editarJogador = async (id, nome, apelido) => {
+    try {
+      const row = await api.updateJogadorDados(id, { nome, apelido: apelido || null });
+      setPlayers((ps) => ps.map((p) => p.id === id
+        ? { ...p, nome: row.nome, apelido: row.apelido || row.nome } : p));
+      return { ok: true };
+    } catch { return { ok: false }; }
+  };
   // Vínculo conta de login ↔ jogador (tela "Quem é você?")
   const vincularExistente = async (jogadorId) => {
     try { await api.claimJogador(jogadorId, user.id); await reloadPlayers(); go("home"); setToast("Pronto! Você entrou ✓"); }
@@ -433,6 +442,7 @@ export default function App() {
       currentPlayer, isHost, isAdmin, updatePlayerPapel, deletePlayer, aprovarPendente, criarJogador, go, setToast }} />,
     registro: <Registro {...{ go, setPendentes, setToast }} />,
     login: <Login go={go} />,
+    editarDados: <EditarDados {...{ jogadorId: route.jogadorId, players, currentUserId, editarJogador, go }} />,
   };
 
   return (
@@ -588,6 +598,87 @@ function QuemEhVoce({ players, vincularExistente, criarMeuJogador, signOut }) {
 
       <div style={{ marginTop: 26 }}>
         <Btn kind="ghost" onClick={() => signOut()}>Sair</Btn>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════ Editar meus dados ════════════════ */
+function EditarDados({ jogadorId, players, currentUserId, editarJogador, go }) {
+  const th = useTheme();
+  const alvo = players.find((p) => p.id === jogadorId);
+  const [nome, setNome] = useState(alvo?.nome || "");
+  const [apelido, setApelido] = useState(alvo?.apelido || "");
+  const [salvando, setSalvando] = useState(false);
+  const [salvo, setSalvo] = useState(false);
+  const [erro, setErro] = useState("");
+  const inputStyle = { width: "100%", minHeight: 56, borderRadius: 14, border: `2px solid ${th.linha}`,
+    fontSize: 19, padding: "0 16px", background: th.inputBg, color: th.tinta, fontFamily: "inherit", outline: "none" };
+
+  if (!alvo) { go("config"); return null; }
+  const ehOutro = alvo.id !== currentUserId;
+  const semVinculo = !alvo.auth_user_id;
+
+  const salvar = async () => {
+    if (!nome.trim()) return;
+    setSalvando(true); setErro("");
+    const { ok } = await editarJogador(alvo.id, nome.trim(), apelido.trim());
+    setSalvando(false);
+    if (ok) setSalvo(true);
+    else setErro("Não foi possível salvar. Entre de novo ou avise o anfitrião.");
+  };
+
+  if (salvo) {
+    return (
+      <div style={{ textAlign: "center", paddingTop: 56 }}>
+        <span className="trofeu" style={{ fontSize: 64 }} aria-hidden="true">✅</span>
+        <h1 style={{ fontFamily: th.fontDisplay, fontWeight: th.displayWeight, fontSize: 30,
+          margin: "16px 0 8px", color: th.pageText }}>Pronto! ✓</h1>
+        <p style={{ fontSize: 19, color: th.pageSub, lineHeight: 1.5, margin: "0 0 30px" }}>
+          {ehOutro ? `Os dados de ${apelido.trim() || nome.trim()} foram salvos.` : "Seus dados foram salvos."}
+        </p>
+        <Btn kind="primary" onClick={() => go("config")}>Voltar aos Ajustes</Btn>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Header title={ehOutro ? "Editar jogador" : "Editar meus dados"} onBack={() => go("config")} />
+      <Card pad={16} style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
+        <Avatar p={alvo} size={44} />
+        <div>
+          <p style={{ margin: 0, fontSize: 15, color: th.suave, fontWeight: 700,
+            textTransform: "uppercase", letterSpacing: "0.06em" }}>Editando</p>
+          <p style={{ margin: 0, fontSize: 19, fontWeight: 800 }}>{alvo.nome}</p>
+          {ehOutro && semVinculo && (
+            <p style={{ margin: "2px 0 0", fontSize: 15, color: th.suave }}>ainda não entrou no app</p>
+          )}
+        </div>
+      </Card>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div>
+          <label style={{ display: "block", fontSize: 18, fontWeight: 700, marginBottom: 6, color: th.pageText }}>Nome</label>
+          <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex: João Silva" style={inputStyle} />
+          {!nome.trim() && (
+            <p style={{ margin: "6px 2px 0", fontSize: 16, color: th.danger }}>Coloca o nome aqui 🙂</p>
+          )}
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 18, fontWeight: 700, marginBottom: 6, color: th.pageText }}>
+            Apelido <span style={{ color: th.suave, fontWeight: 400 }}>(como aparece no placar)</span>
+          </label>
+          <input value={apelido} onChange={(e) => setApelido(e.target.value)} placeholder="Ex: Joãozinho" style={inputStyle} />
+        </div>
+        {erro && (
+          <Card style={{ borderColor: th.accent, background: th.chipBg }}>
+            <p style={{ margin: 0, fontSize: 17, lineHeight: 1.5 }}>{erro}</p>
+          </Card>
+        )}
+        <Btn kind="ok" disabled={!nome.trim() || salvando} onClick={salvar}>
+          {salvando ? "Salvando…" : "Salvar"}
+        </Btn>
       </div>
     </div>
   );
@@ -1298,18 +1389,23 @@ function Config({ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes,
       {/* ── Meu perfil / conta ── */}
       <p style={{ fontSize: 19, fontWeight: 800, margin: "4px 0 6px", color: th.pageText }}>Meu perfil</p>
       {user && currentPlayer ? (
-        <Card pad={16} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <Avatar p={currentPlayer} size={46} ring={th.accent} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <p style={{ margin: 0, fontSize: 19, fontWeight: 800 }}>{currentPlayer.apelido}</p>
-            <p style={{ margin: 0, fontSize: 15, color: th.suave, overflow: "hidden", textOverflow: "ellipsis" }}>
-              {(PAPEIS.find((x) => x.id === currentPlayer.papel) || {}).label || "Convidado"} · {user.email}
-            </p>
+        <>
+          <Card pad={16} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <Avatar p={currentPlayer} size={46} ring={th.accent} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ margin: 0, fontSize: 19, fontWeight: 800 }}>{currentPlayer.apelido}</p>
+              <p style={{ margin: 0, fontSize: 15, color: th.suave, overflow: "hidden", textOverflow: "ellipsis" }}>
+                {(PAPEIS.find((x) => x.id === currentPlayer.papel) || {}).label || "Convidado"} · {user.email}
+              </p>
+            </div>
+            <button onClick={() => signOut()} className="press" style={{ minHeight: 48, padding: "0 16px",
+              borderRadius: 12, border: `1.5px solid ${th.linha}`, background: th.card, color: th.danger,
+              fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flex: "none" }}>Sair</button>
+          </Card>
+          <div style={{ marginTop: 10 }}>
+            <Btn kind="ghost" onClick={() => go("editarDados", { jogadorId: currentPlayer.id })}>Editar meus dados</Btn>
           </div>
-          <button onClick={() => signOut()} className="press" style={{ minHeight: 48, padding: "0 16px",
-            borderRadius: 12, border: `1.5px solid ${th.linha}`, background: th.card, color: th.danger,
-            fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flex: "none" }}>Sair</button>
-        </Card>
+        </>
       ) : (
         <Card pad={18}>
           <p style={{ margin: "0 0 12px", fontSize: 18, color: th.suave, lineHeight: 1.45 }}>
@@ -1354,12 +1450,17 @@ function Config({ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes,
                       <p style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{p.apelido}</p>
                       <p style={{ margin: 0, fontSize: 15, color: th.suave }}>{p.nome}</p>
                     </div>
+                    <button onClick={() => go("editarDados", { jogadorId: p.id })} className="press"
+                      aria-label={`Editar ${p.apelido}`}
+                      style={{ width: 40, height: 40, borderRadius: 10, border: `1.5px solid ${th.linha}`,
+                        background: th.card, color: th.tinta, fontSize: 17, cursor: "pointer",
+                        fontFamily: "inherit", flex: "none" }}>✎</button>
                     {p.id !== currentUserId && (
                       <button onClick={() => setDelPlayer(p.id)} className="press"
                         aria-label={`Remover ${p.apelido}`}
                         style={{ width: 40, height: 40, borderRadius: 10, border: `1.5px solid ${th.linha}`,
                           background: th.card, color: th.danger, fontSize: 17, cursor: "pointer",
-                          fontFamily: "inherit" }}>🗑</button>
+                          fontFamily: "inherit", flex: "none" }}>🗑</button>
                     )}
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
