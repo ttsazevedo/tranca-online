@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect, createContext, useContext } from "react";
+import { useAuth } from "./src/auth.jsx";
+import * as api from "./src/api.js";
 
 /* ════════════════ Persistência (localStorage em produção, memória no preview) ════════════════ */
 const memStore = {};
@@ -78,38 +80,6 @@ const ThemeCtx = createContext(THEMES.sobrio);
 const useTheme = () => useContext(ThemeCtx);
 const fmt = (n) => n.toLocaleString("pt-BR");
 
-/* ════════════════ Dados de exemplo ════════════════ */
-const PLAYERS0 = [
-  { id: "p1", nome: "José Almeida",  apelido: "Zé" },
-  { id: "p2", nome: "Carlos Braga",  apelido: "Carlão" },
-  { id: "p3", nome: "Lúcia Ferraz",  apelido: "Lú" },
-  { id: "p4", nome: "Antônio Souza", apelido: "Tonho" },
-  { id: "p5", nome: "Marta Vilela",  apelido: "Marta" },
-  { id: "p6", nome: "Paulo Mendes",  apelido: "Paulinho" },
-  { id: "p7", nome: "Helena Castro", apelido: "Helena" },
-  { id: "p8", nome: "Rubens Lopes",  apelido: "Rubinho" },
-];
-const mkGame = (id, date, a, b, ra, rb, meta = 3000) => {
-  const ta = ra.reduce((s, n) => s + n, 0), tb = rb.reduce((s, n) => s + n, 0);
-  return { id, date, meta, status: "done", winner: ta >= tb ? 0 : 1,
-    teams: [{ players: a, rounds: ra, total: ta }, { players: b, rounds: rb, total: tb }] };
-};
-const GAMES0 = [
-  mkGame("g1", "2026-05-12", ["p1","p2"], ["p3","p4"], [820, 940, 760, 610], [540, 720, 880, 700]),
-  mkGame("g2", "2026-05-19", ["p1","p3"], ["p5","p6"], [690, 880, 720], [910, 1040, 1120]),
-  mkGame("g3", "2026-05-26", ["p2","p4"], ["p7","p8"], [1050, 980, 1010], [760, 690, 850]),
-  mkGame("g4", "2026-06-02", ["p1","p2"], ["p5","p7"], [880, 1120, 1060], [720, 940, 810]),
-  mkGame("g5", "2026-06-09", ["p3","p4"], ["p6","p8"], [940, 870, 1230], [680, 1110, 920]),
-];
-const MOMENTOS0 = [
-  { id: "m1", autor: "p3", data: "2026-06-09", tom: "#5B2230", naipe: "♥",
-    texto: "Tonho fechou com tranca limpa de ases. A mesa parou. O jantar depois foi por conta dos perdedores, como manda a tradição." },
-  { id: "m2", autor: "p1", data: "2026-06-02", tom: "#1A4750", naipe: "♠",
-    texto: "Noite histórica: Carlão virou um jogo perdido por 800 pontos. Helena ainda não acredita." },
-  { id: "m3", autor: "p6", data: "2026-05-26", tom: "#1E4D38", naipe: "♦",
-    texto: "Primeira terça da Helena e do Rubinho como dupla. Estreia com vitória e bolo de rolo da Marta." },
-];
-
 /* ════════════════ Primitivas (consomem o tema) ════════════════ */
 function Avatar({ p, size = 44, ring }) {
   const th = useTheme();
@@ -178,7 +148,7 @@ function Confirm({ open, titulo, texto, acao, onYes, onNo }) {
   const th = useTheme();
   if (!open) return null;
   return (
-    <div style={{ position: "absolute", inset: 0, background: "rgba(15,12,8,0.55)", zIndex: 50,
+    <div style={{ position: "fixed", inset: 0, background: "rgba(15,12,8,0.55)", zIndex: 50,
       display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <div style={{ background: th.card, borderRadius: th.radius, padding: 24, width: "100%",
         maxWidth: 340, color: th.tinta }}>
@@ -214,24 +184,70 @@ export default function App() {
   const setFeltro = (f) => { setFeltroRaw(f); persist.set("tranca.feltro", f); };
   const fel = FELTROS[feltro];
 
-  const [players, setPlayers] = useState(PLAYERS0);
-  const [pendentes, setPendentes] = useState([{ id: "px", nome: "Sérgio Tavares", apelido: "Serjão" }]);
-  const [games, setGames] = useState(GAMES0);
-  const [momentos, setMomentos] = useState(MOMENTOS0);
+  const { user, session, signOut } = useAuth();
+  const [players, setPlayers] = useState([]);
+  const [pendentes, setPendentes] = useState(() => {
+    try { return JSON.parse(persist.get("tranca.pendentes") || "[]"); }
+    catch { return []; }
+  });
+  const [games, setGames] = useState([]);
+  const [momentos, setMomentos] = useState([]);
   const [champ, setChamp] = useState(null);
-  const [route, setRoute] = useState({ name: "home" });
+  const [loadingData, setLoadingData] = useState(true);
+  const [route, setRoute] = useState(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("join") === "TRCA") return { name: "registro" };
+    } catch {}
+    return { name: "home" };
+  });
   const [toast, setToast] = useState("");
+
+  const reloadPlayers = async () => {
+    try { setPlayers(await api.fetchJogadores()); } catch {}
+  };
 
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(""), 2200);
     return () => clearTimeout(t);
   }, [toast]);
+  useEffect(() => { persist.set("tranca.pendentes", JSON.stringify(pendentes)); }, [pendentes]);
+  // Carga inicial do Supabase (leitura pública — não exige login)
+  useEffect(() => {
+    let alive = true;
+    api.loadAll()
+      .then((d) => {
+        if (!alive) return;
+        setPlayers(d.players); setGames(d.games);
+        setMomentos(d.momentos); setChamp(d.champ);
+      })
+      .catch(() => setToast("Não foi possível carregar os dados"))
+      .finally(() => { if (alive) setLoadingData(false); });
+    return () => { alive = false; };
+  }, []);
+  // Ao entrar/sair, atualiza a lista de jogadores (papel/identidade)
+  useEffect(() => { if (user) reloadPlayers(); }, [user?.id]);
 
   const byId = (id) => players.find((p) => p.id === id) || pendentes.find((p) => p.id === id) || { apelido: "?" };
   const nomes = (ids) => ids.map((i) => byId(i).apelido).join(" & ");
   const go = (name, params = {}) => setRoute({ name, ...params });
   const liveGame = games.find((g) => g.status === "live" && !g.matchId);
+
+  const currentPlayer = user ? players.find((p) => p.auth_user_id === user.id) || null : null;
+  const currentUserId = currentPlayer?.id || null;
+  const myPapel = currentPlayer?.papel || "convidado";
+  const isHost = myPapel === "anfitriao";
+  const isAdmin = myPapel === "administrador" || isHost;
+  // Logado mas ainda sem jogador vinculado → precisa escolher "Quem é você?"
+  const needsLink = !!user && !loadingData && !currentPlayer;
+  // Bloqueia escrita para quem não entrou, com convite amigável (sem erro técnico)
+  const guard = () => {
+    if (!session) { setToast("Entre para registrar — é rapidinho"); go("login"); return false; }
+    return true;
+  };
+  const TONS = ["#1E4D38", "#5B2230", "#1A4750", "#33322E"];
+  const NAIPES = ["♠", "♥", "♦", "♣"];
 
   const ranking = useMemo(() => {
     const ind = {}, dup = {};
@@ -257,35 +273,46 @@ export default function App() {
     return { indArr, dupArr };
   }, [games, players]);
 
-  const startGame = (teamA, teamB, meta, matchId) => {
-    const g = { id: "g" + Date.now(), date: new Date().toISOString().slice(0, 10), meta,
-      status: "live", winner: null, matchId,
-      teams: [{ players: teamA, rounds: [], total: 0 }, { players: teamB, rounds: [], total: 0 }] };
-    setGames((gs) => [...gs, g]);
-    go("game", { gameId: g.id });
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  const startGame = async (teamA, teamB, meta, matchId = null, campeonatoId = null) => {
+    if (!guard()) return;
+    const draft = { date: today(), meta, matchId, campeonatoId,
+      teams: [{ players: teamA, rounds: [] }, { players: teamB, rounds: [] }] };
+    try {
+      const g = await api.insertLive(draft);
+      setGames((gs) => [...gs, g]);
+      go("game", { gameId: g.id });
+    } catch { setToast("Não foi possível iniciar a partida"); }
   };
-  const addRound = (gameId, a, b) => {
-    setGames((gs) => gs.map((g) => {
-      if (g.id !== gameId) return g;
-      const teams = g.teams.map((t, i) => {
-        const rounds = [...t.rounds, i === 0 ? a : b];
-        return { ...t, rounds, total: rounds.reduce((s, n) => s + n, 0) };
-      });
-      const [ta, tb] = [teams[0].total, teams[1].total];
-      let status = g.status, winner = g.winner;
-      if ((ta >= g.meta || tb >= g.meta) && ta !== tb) { status = "done"; winner = ta > tb ? 0 : 1; }
-      return { ...g, teams, status, winner };
-    }));
+  const addRound = async (gameId, a, b) => {
+    const g = games.find((x) => x.id === gameId);
+    if (!g) return;
+    const teams = g.teams.map((t, i) => {
+      const rounds = [...t.rounds, i === 0 ? a : b];
+      return { ...t, rounds, total: rounds.reduce((s, n) => s + n, 0) };
+    });
+    const [ta, tb] = [teams[0].total, teams[1].total];
+    let status = g.status, winner = g.winner;
+    if ((ta >= g.meta || tb >= g.meta) && ta !== tb) { status = "done"; winner = ta > tb ? 0 : 1; }
+    const ng = { ...g, teams, status, winner };
+    setGames((gs) => gs.map((x) => (x.id === gameId ? ng : x)));
+    try {
+      if (status === "done") await api.commitPartida(ng);
+      else await api.updateLiveRounds(gameId, teams[0].rounds, teams[1].rounds);
+    } catch { setToast("Falha ao salvar a rodada — verifique a conexão"); }
   };
-  const undoRound = (gameId) => {
-    setGames((gs) => gs.map((g) => {
-      if (g.id !== gameId) return g;
-      const teams = g.teams.map((t) => {
-        const rounds = t.rounds.slice(0, -1);
-        return { ...t, rounds, total: rounds.reduce((s, n) => s + n, 0) };
-      });
-      return { ...g, teams, status: "live", winner: null };
-    }));
+  const undoRound = async (gameId) => {
+    const g = games.find((x) => x.id === gameId);
+    if (!g) return;
+    const teams = g.teams.map((t) => {
+      const rounds = t.rounds.slice(0, -1);
+      return { ...t, rounds, total: rounds.reduce((s, n) => s + n, 0) };
+    });
+    const ng = { ...g, teams, status: "live", winner: null };
+    setGames((gs) => gs.map((x) => (x.id === gameId ? ng : x)));
+    try { await api.updateLiveRounds(gameId, teams[0].rounds, teams[1].rounds); }
+    catch { setToast("Falha ao salvar — verifique a conexão"); }
   };
 
   const sortearDuplas = () => {
@@ -296,18 +323,23 @@ export default function App() {
     }
     return [ids.slice(0, 2), ids.slice(2, 4), ids.slice(4, 6), ids.slice(6, 8)];
   };
-  const criarCampeonato = (duplas, meta) => {
-    setChamp({ id: "c" + Date.now(), data: new Date().toISOString().slice(0, 10), meta, status: "live",
-      duplas,
-      matches: [
-        { id: "semi1", fase: "Semifinal 1", a: 0, b: 1, gameId: null, winner: null },
-        { id: "semi2", fase: "Semifinal 2", a: 2, b: 3, gameId: null, winner: null },
-        { id: "final", fase: "Grande final", a: null, b: null, gameId: null, winner: null },
-      ] });
-    go("champ");
+  const criarCampeonato = async (duplas, meta) => {
+    if (!guard()) return;
+    const matches = [
+      { id: "semi1", fase: "Semifinal 1", a: 0, b: 1, gameId: null, winner: null },
+      { id: "semi2", fase: "Semifinal 2", a: 2, b: 3, gameId: null, winner: null },
+      { id: "final", fase: "Grande final", a: null, b: null, gameId: null, winner: null },
+    ];
+    try {
+      const row = await api.insertCampeonato({ data: today(), meta, status: "live", duplas, matches });
+      setChamp({ id: row.id, data: row.data, meta: row.meta, status: row.status,
+        duplas: row.duplas, matches: row.matches });
+      go("champ");
+    } catch { setToast("Não foi possível criar o campeonato"); }
   };
-  const onGameFinished = (g) => {
+  const onGameFinished = async (g) => {
     if (!g.matchId || !champ) return;
+    let updated = null;
     setChamp((c) => {
       const matches = c.matches.map((m) => {
         if (m.id !== g.matchId) return m;
@@ -316,13 +348,65 @@ export default function App() {
       const s1 = matches[0].winner, s2 = matches[1].winner;
       if (s1 != null && s2 != null && matches[2].a == null)
         matches[2] = { ...matches[2], a: s1, b: s2 };
-      return { ...c, matches, status: matches[2].winner != null ? "done" : "live" };
+      updated = { ...c, matches, status: matches[2].winner != null ? "done" : "live" };
+      return updated;
     });
+    try { if (updated) await api.updateCampeonato(updated.id, { matches: updated.matches, status: updated.status }); }
+    catch {}
   };
   const share = (texto) => {
     if (navigator.share) navigator.share({ text: texto }).catch(() => {});
     else if (navigator.clipboard) navigator.clipboard.writeText(texto).catch(() => {});
     setToast("Resultado copiado ✓");
+  };
+  const deleteGame = async (id) => {
+    try { await api.deletePartida(id); setGames((gs) => gs.filter((g) => g.id !== id)); }
+    catch { setToast("Sem permissão para apagar (só o anfitrião)"); }
+  };
+  const deletePlayer = async (id) => {
+    if (id === currentUserId) { setToast("Não é possível remover a si mesmo"); return; }
+    try { await api.deleteJogador(id); setPlayers((ps) => ps.filter((p) => p.id !== id)); setToast("Jogador removido"); }
+    catch { setToast("Sem permissão para remover (só o anfitrião)"); }
+  };
+  const updatePlayerPapel = async (id, papel) => {
+    const LABEL = { convidado: "Convidado", administrador: "Admin", anfitriao: "Anfitrião" };
+    try {
+      await api.updateJogadorPapel(id, papel);
+      setPlayers((ps) => ps.map((p) => p.id === id ? { ...p, papel } : p));
+      setToast(`Perfil atualizado: ${LABEL[papel] || papel} ✓`);
+    } catch { setToast("Sem permissão (só o anfitrião)"); }
+  };
+  const addMomento = async (texto) => {
+    if (!guard()) return;
+    try {
+      const row = await api.insertMomento({ texto, autor_id: currentUserId });
+      setMomentos((ms) => [{ id: row.id, autor: currentUserId, data: today(),
+        texto, tom: TONS[0], naipe: NAIPES[0] }, ...ms]);
+      setToast("Momento guardado ✓");
+    } catch { setToast("Não foi possível guardar o momento"); }
+  };
+  const aprovarPendente = async (p) => {
+    try {
+      const row = await api.insertJogador({ nome: p.nome, apelido: p.apelido, papel: "convidado" });
+      setPlayers((pl) => [...pl, { id: row.id, nome: row.nome, apelido: row.apelido || row.nome,
+        papel: row.papel, auth_user_id: null, foto_url: null }]);
+      setPendentes((ps) => ps.filter((x) => x.id !== p.id));
+      setToast(`${p.apelido} entrou no grupo ✓`);
+    } catch { setToast("Entre para aprovar pedidos"); }
+  };
+  // Vínculo conta de login ↔ jogador (tela "Quem é você?")
+  const vincularExistente = async (jogadorId) => {
+    try { await api.claimJogador(jogadorId, user.id); await reloadPlayers(); go("home"); setToast("Pronto! Você entrou ✓"); }
+    catch { setToast("Esse jogador já tem dono. Escolha outro ou crie o seu."); }
+  };
+  const criarMeuJogador = async (nome, apelido) => {
+    try {
+      const primeiro = players.length === 0;
+      await api.insertJogador({ nome, apelido, papel: primeiro ? "anfitriao" : "convidado", auth_user_id: user.id });
+      await reloadPlayers();
+      go("home");
+      setToast(primeiro ? "Bem-vindo, anfitrião! ✓" : "Cadastro criado ✓");
+    } catch { setToast("Não foi possível criar seu cadastro"); }
   };
 
   const screens = {
@@ -332,10 +416,13 @@ export default function App() {
       {...{ games, fel, nomes, addRound, undoRound, go, champ, onGameFinished, share, setToast }} />,
     champ: <Campeonato {...{ champ, fel, nomes, go, startGame, criarCampeonato, sortearDuplas, games, share }} />,
     ranking: <Ranking {...{ ranking, go, byId }} />,
-    historico: <Historico {...{ games, go, nomes }} />,
+    historico: <Historico {...{ games, go, nomes, isHost, deleteGame, setToast }} />,
     detalhe: <Detalhe gameId={route.gameId} {...{ games, go, nomes }} />,
-    momentos: <Momentos {...{ momentos, setMomentos, byId, players, go, setToast }} />,
-    config: <Config {...{ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes, setPlayers, go, setToast }} />,
+    momentos: <Momentos {...{ momentos, addMomento, byId, go }} />,
+    config: <Config {...{ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes, players,
+      currentPlayer, isHost, isAdmin, updatePlayerPapel, deletePlayer, aprovarPendente, go, setToast }} />,
+    registro: <Registro {...{ go, setPendentes, setToast }} />,
+    login: <Login go={go} />,
   };
 
   return (
@@ -348,14 +435,165 @@ export default function App() {
           backgroundImage: th.pagePattern, backgroundSize: th.pagePatternSize || "auto",
           padding: "0 18px 28px", position: "relative", overflowX: "hidden" }}>
           {th.id === "tranca" && <CartasFundo />}
-          <div className={th.entry} key={th.id + route.name + (route.gameId || "")}
+          <div className={th.entry} key={th.id + route.name + (route.gameId || "") + (loadingData ? "L" : "") + (needsLink ? "V" : "")}
             style={{ position: "relative", zIndex: 1 }}>
-            {screens[route.name]}
+            {loadingData
+              ? <Carregando />
+              : needsLink
+                ? <QuemEhVoce {...{ players, vincularExistente, criarMeuJogador, signOut }} />
+                : (screens[route.name] || screens.home)}
           </div>
           <Toast msg={toast} />
         </div>
       </div>
     </ThemeCtx.Provider>
+  );
+}
+
+/* ════════════════ Carregando ════════════════ */
+function Carregando() {
+  const th = useTheme();
+  return (
+    <div style={{ textAlign: "center", paddingTop: 90 }}>
+      <span className="trofeu" style={{ fontSize: 56 }} aria-hidden="true">🃏</span>
+      <p style={{ fontSize: 20, color: th.pageSub, marginTop: 16 }}>Carregando…</p>
+    </div>
+  );
+}
+
+/* ════════════════ Entrar (Magic Link) ════════════════ */
+function Login({ go }) {
+  const th = useTheme();
+  const { signInWithEmail, authMessage } = useAuth();
+  const [email, setEmail] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [enviado, setEnviado] = useState(false);
+  const [erro, setErro] = useState("");
+  const valido = /\S+@\S+\.\S+/.test(email);
+
+  const enviar = async () => {
+    setEnviando(true); setErro("");
+    const { error } = await signInWithEmail(email);
+    setEnviando(false);
+    if (error) setErro("Não conseguimos enviar agora. Confira o e-mail e tente de novo.");
+    else setEnviado(true);
+  };
+
+  if (enviado) {
+    return (
+      <div style={{ textAlign: "center", paddingTop: 50 }}>
+        <span style={{ fontSize: 64 }} aria-hidden="true">📧</span>
+        <h1 style={{ fontFamily: th.fontDisplay, fontWeight: th.displayWeight, fontSize: 29,
+          margin: "16px 0 10px", color: th.pageText, lineHeight: 1.2 }}>
+          Enviamos um link para seu e-mail
+        </h1>
+        <p style={{ fontSize: 19, color: th.pageSub, lineHeight: 1.55, margin: "0 0 8px" }}>
+          Abra o e-mail <strong style={{ color: th.pageText }}>no mesmo celular</strong> e toque no link para entrar.
+        </p>
+        <p style={{ fontSize: 17, color: th.pageSub, lineHeight: 1.55, margin: "0 0 30px" }}>
+          Não chegou? Veja a caixa de spam ou peça de novo.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <Btn kind="ghost" onClick={() => setEnviado(false)}>Usar outro e-mail</Btn>
+          <Btn kind="ghost" onClick={() => go("home")}>Voltar ao app</Btn>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Header title="Entrar" onBack={() => go("home")} />
+      <p style={{ fontSize: 18, color: th.pageSub, margin: "0 0 20px", lineHeight: 1.5 }}>
+        Para registrar partidas, jogadores e momentos, entre com seu e-mail.
+        Você recebe um link e pronto — <strong style={{ color: th.pageText }}>sem senha</strong>.
+        Ver ranking e histórico não precisa entrar.
+      </p>
+      {(authMessage || erro) && (
+        <Card style={{ marginBottom: 16, borderColor: th.accent, background: th.chipBg }}>
+          <p style={{ margin: 0, fontSize: 17, lineHeight: 1.5 }}>{erro || authMessage}</p>
+        </Card>
+      )}
+      <label style={{ display: "block", fontSize: 17, fontWeight: 700, marginBottom: 6, color: th.pageText }}>
+        Seu e-mail
+      </label>
+      <input value={email} inputMode="email" autoComplete="email"
+        onChange={(e) => setEmail(e.target.value)} placeholder="voce@exemplo.com"
+        style={{ width: "100%", minHeight: 60, borderRadius: 14, border: `2px solid ${th.linha}`,
+          fontSize: 19, padding: "0 16px", background: th.inputBg, color: th.tinta,
+          fontFamily: "inherit", outline: "none" }} />
+      <div style={{ marginTop: 18 }}>
+        <Btn kind="ok" disabled={!valido || enviando} onClick={enviar}>
+          {enviando ? "Enviando…" : "Enviar link de entrada"}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════ Quem é você? (vínculo conta ↔ jogador) ════════════════ */
+function QuemEhVoce({ players, vincularExistente, criarMeuJogador, signOut }) {
+  const th = useTheme();
+  const semDono = players.filter((p) => !p.auth_user_id);
+  const [criando, setCriando] = useState(players.length === 0);
+  const [nome, setNome] = useState("");
+  const [apelido, setApelido] = useState("");
+  const inputStyle = { width: "100%", minHeight: 56, borderRadius: 14, border: `2px solid ${th.linha}`,
+    fontSize: 19, padding: "0 16px", background: th.inputBg, color: th.tinta, fontFamily: "inherit", outline: "none" };
+
+  return (
+    <div>
+      <Header title="Quem é você?" />
+      <p style={{ fontSize: 18, color: th.pageSub, margin: "0 0 18px", lineHeight: 1.5 }}>
+        Você entrou! Agora diga qual jogador é você, para o app saber de quem são as vitórias.
+      </p>
+
+      {!criando && (
+        <>
+          {semDono.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {semDono.map((p) => (
+                <button key={p.id} onClick={() => vincularExistente(p.id)} className="press hoverable"
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px",
+                    borderRadius: th.radius, border: `2px solid ${th.linha}`, background: th.card,
+                    cursor: "pointer", fontFamily: "inherit", textAlign: "left", color: th.tinta }}>
+                  <Avatar p={p} size={44} />
+                  <span style={{ flex: 1, fontSize: 19, fontWeight: 800 }}>{p.apelido}</span>
+                  <span style={{ fontSize: 16, color: th.accent, fontWeight: 800 }}>Sou eu →</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <Card pad={18}><p style={{ margin: 0, fontSize: 18, color: th.suave }}>
+              Todos os jogadores já têm dono. Crie o seu cadastro abaixo.
+            </p></Card>
+          )}
+          <div style={{ marginTop: 14 }}>
+            <Btn kind="ghost" onClick={() => setCriando(true)}>Não estou na lista — criar meu cadastro</Btn>
+          </div>
+        </>
+      )}
+
+      {criando && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 17, fontWeight: 700, marginBottom: 6, color: th.pageText }}>Seu nome</label>
+            <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex: João Silva" style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 17, fontWeight: 700, marginBottom: 6, color: th.pageText }}>Apelido (no placar)</label>
+            <input value={apelido} onChange={(e) => setApelido(e.target.value)} placeholder="Ex: Joãozinho" style={inputStyle} />
+          </div>
+          <Btn kind="ok" disabled={!nome.trim() || !apelido.trim()}
+            onClick={() => criarMeuJogador(nome.trim(), apelido.trim())}>Sou eu, criar cadastro</Btn>
+          {players.length > 0 && <Btn kind="ghost" onClick={() => setCriando(false)}>Voltar à lista</Btn>}
+        </div>
+      )}
+
+      <div style={{ marginTop: 26 }}>
+        <Btn kind="ghost" onClick={() => signOut()}>Sair</Btn>
+      </div>
+    </div>
   );
 }
 
@@ -398,7 +636,7 @@ function Home({ fel, players, pendentes, games, liveGame, champ, go, nomes }) {
         <p style={{ margin: 0, fontSize: 16, letterSpacing: "0.14em", textTransform: "uppercase",
           color: th.accentClaro, fontWeight: 700 }}>Toda terça, desde 2019</p>
         <h1 style={{ fontFamily: th.fontDisplay, fontWeight: th.displayWeight, fontSize: 36,
-          margin: "6px 0 4px" }}>Confraria da Terça</h1>
+          margin: "6px 0 4px" }}>Cassino do Riva</h1>
         <p style={{ margin: 0, fontSize: 18, opacity: 0.85 }}>{players.length} jogadores · Tranca até 3.000</p>
       </div>
 
@@ -555,7 +793,7 @@ function Game({ gameId, games, fel, nomes, addRound, undoRound, go, champ, onGam
             ? <Btn kind="primary" onClick={() => go("champ")}>Voltar ao campeonato</Btn>
             : <>
                 <Btn kind="ok" onClick={() => share(
-                  `🃏 Confraria da Terça — ${nomes(w.players)} venceram por ${fmt(w.total)} a ${fmt(l.total)}!`)}>
+                  `🃏 Cassino do Riva — ${nomes(w.players)} venceram por ${fmt(w.total)} a ${fmt(l.total)}!`)}>
                   Compartilhar no WhatsApp
                 </Btn>
                 <Btn kind="ghost" onClick={() => go("home")}>Voltar ao grupo</Btn>
@@ -772,7 +1010,7 @@ function Campeonato({ champ, fel, nomes, go, startGame, criarCampeonato, sortear
                 <Btn kind="primary" style={{ minHeight: 56, fontSize: 18 }}
                   onClick={() => {
                     if (jogo && jogo.status === "live") go("game", { gameId: jogo.id });
-                    else startGame(champ.duplas[m.a], champ.duplas[m.b], champ.meta, m.id);
+                    else startGame(champ.duplas[m.a], champ.duplas[m.b], champ.meta, m.id, champ.id);
                   }}>
                   {jogo && jogo.status === "live" ? "Voltar ao placar" : "Abrir o placar"}
                 </Btn>
@@ -803,7 +1041,7 @@ function Campeonato({ champ, fel, nomes, go, startGame, criarCampeonato, sortear
             {nomes(campea)}
           </p>
           <div style={{ marginTop: 16 }}>
-            <Btn kind="ok" onClick={() => share(`🏆 Campeonato da Confraria da Terça: ${nomes(campea)} são as campeãs da noite!`)}>
+            <Btn kind="ok" onClick={() => share(`🏆 Campeonato do Cassino do Riva: ${nomes(campea)} são as campeãs da noite!`)}>
               Compartilhar no WhatsApp
             </Btn>
           </div>
@@ -868,8 +1106,9 @@ function Ranking({ ranking, go, byId }) {
 }
 
 /* ════════════════ Histórico e detalhe ════════════════ */
-function Historico({ games, go, nomes }) {
+function Historico({ games, go, nomes, isHost, deleteGame, setToast }) {
   const th = useTheme();
+  const [delConfirm, setDelConfirm] = useState(null);
   const done = [...games].filter((g) => g.status === "done").reverse();
   const dataBr = (d) => new Date(d + "T12:00").toLocaleDateString("pt-BR", { day: "numeric", month: "long" });
   return (
@@ -877,19 +1116,34 @@ function Historico({ games, go, nomes }) {
       <Header title="Histórico" onBack={() => go("home")} />
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {done.map((g) => (
-          <Card key={g.id} pad={16} onClick={() => go("detalhe", { gameId: g.id })}>
-            <p style={{ margin: 0, fontSize: 16, color: th.suave, textTransform: "uppercase",
-              letterSpacing: "0.08em", fontWeight: 700 }}>
-              {dataBr(g.date)}{g.matchId ? " · campeonato" : ""}
-            </p>
-            <p style={{ margin: "6px 0 0", fontSize: 19, lineHeight: 1.4 }}>
-              <strong>🏆 {nomes(g.teams[g.winner].players)}</strong>{" "}
-              {fmt(g.teams[g.winner].total)} × {fmt(g.teams[1 - g.winner].total)}{" "}
-              {nomes(g.teams[1 - g.winner].players)}
-            </p>
-          </Card>
+          <div key={g.id} style={{ position: "relative" }}>
+            <Card pad={16} onClick={() => go("detalhe", { gameId: g.id })}
+              style={isHost ? { paddingRight: 56 } : {}}>
+              <p style={{ margin: 0, fontSize: 16, color: th.suave, textTransform: "uppercase",
+                letterSpacing: "0.08em", fontWeight: 700 }}>
+                {dataBr(g.date)}{g.matchId ? " · campeonato" : ""}
+              </p>
+              <p style={{ margin: "6px 0 0", fontSize: 19, lineHeight: 1.4 }}>
+                <strong>🏆 {nomes(g.teams[g.winner].players)}</strong>{" "}
+                {fmt(g.teams[g.winner].total)} × {fmt(g.teams[1 - g.winner].total)}{" "}
+                {nomes(g.teams[1 - g.winner].players)}
+              </p>
+            </Card>
+            {isHost && (
+              <button onClick={(e) => { e.stopPropagation(); setDelConfirm(g.id); }}
+                className="press" aria-label="Apagar partida"
+                style={{ position: "absolute", top: 10, right: 10, width: 40, height: 40, zIndex: 2,
+                  borderRadius: 10, border: `1.5px solid ${th.linha}`, background: th.card,
+                  color: th.danger, fontSize: 17, cursor: "pointer", fontFamily: "inherit" }}>🗑</button>
+            )}
+          </div>
         ))}
       </div>
+      <Confirm open={!!delConfirm} titulo="Apagar esta partida?"
+        texto="O registro sai do histórico permanentemente. O ranking será recalculado."
+        acao="Sim, apagar"
+        onYes={() => { deleteGame(delConfirm); setDelConfirm(null); setToast("Partida apagada"); }}
+        onNo={() => setDelConfirm(null)} />
     </div>
   );
 }
@@ -922,13 +1176,11 @@ function Detalhe({ gameId, games, go, nomes }) {
 }
 
 /* ════════════════ Momentos ════════════════ */
-function Momentos({ momentos, setMomentos, byId, players, go, setToast }) {
+function Momentos({ momentos, addMomento, byId, go }) {
   const th = useTheme();
   const [texto, setTexto] = useState("");
   const [escrevendo, setEscrevendo] = useState(false);
   const dataBr = (d) => new Date(d + "T12:00").toLocaleDateString("pt-BR", { day: "numeric", month: "long" });
-  const tons = ["#1E4D38", "#5B2230", "#1A4750", "#33322E"];
-  const naipes = ["♠", "♥", "♦", "♣"];
   return (
     <div>
       <Header title="Momentos" onBack={() => go("home")} />
@@ -952,10 +1204,8 @@ function Momentos({ momentos, setMomentos, byId, players, go, setToast }) {
               fontFamily: "inherit" }} />
           <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
             <Btn kind="ok" style={{ minHeight: 54, fontSize: 17 }} disabled={!texto.trim()} onClick={() => {
-              setMomentos((ms) => [{ id: "m" + Date.now(), autor: players[0].id,
-                data: new Date().toISOString().slice(0, 10),
-                tom: tons[ms.length % 4], naipe: naipes[ms.length % 4], texto: texto.trim() }, ...ms]);
-              setTexto(""); setEscrevendo(false); setToast("Momento guardado ✓");
+              addMomento(texto.trim());
+              setTexto(""); setEscrevendo(false);
             }}>Guardar momento</Btn>
             <Btn kind="ghost" style={{ minHeight: 54, fontSize: 17 }} onClick={() => setEscrevendo(false)}>Cancelar</Btn>
           </div>
@@ -1024,47 +1274,130 @@ function ThemeSelector({ temaId, setTemaId, setToast }) {
 }
 
 /* ════════════════ Ajustes ════════════════ */
-function Config({ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes, setPlayers, go, setToast }) {
+function Config({ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes, players,
+  currentPlayer, isHost, isAdmin, updatePlayerPapel, deletePlayer, aprovarPendente, go, setToast }) {
   const th = useTheme();
+  const { user, signOut } = useAuth();
+  const [delPlayer, setDelPlayer] = useState(null);
+  const currentUserId = currentPlayer?.id || null;
+
+  const PAPEIS = [
+    { id: "convidado",     label: "Convidado",  cor: th.suave },
+    { id: "administrador", label: "Admin",       cor: th.ok },
+    { id: "anfitriao",     label: "Anfitrião",   cor: th.accent },
+  ];
+
   const Titulo = ({ children }) => (
     <p style={{ fontSize: 19, fontWeight: 800, margin: "24px 0 10px", color: th.pageText }}>{children}</p>
   );
+
   return (
     <div>
       <Header title="Ajustes" onBack={() => go("home")} />
 
-      <p style={{ fontSize: 19, fontWeight: 800, margin: "4px 0 6px", color: th.pageText }}>Estilo do aplicativo</p>
+      {/* ── Meu perfil / conta ── */}
+      <p style={{ fontSize: 19, fontWeight: 800, margin: "4px 0 6px", color: th.pageText }}>Meu perfil</p>
+      {user && currentPlayer ? (
+        <Card pad={16} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <Avatar p={currentPlayer} size={46} ring={th.accent} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ margin: 0, fontSize: 19, fontWeight: 800 }}>{currentPlayer.apelido}</p>
+            <p style={{ margin: 0, fontSize: 15, color: th.suave, overflow: "hidden", textOverflow: "ellipsis" }}>
+              {(PAPEIS.find((x) => x.id === currentPlayer.papel) || {}).label || "Convidado"} · {user.email}
+            </p>
+          </div>
+          <button onClick={() => signOut()} className="press" style={{ minHeight: 48, padding: "0 16px",
+            borderRadius: 12, border: `1.5px solid ${th.linha}`, background: th.card, color: th.danger,
+            fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flex: "none" }}>Sair</button>
+        </Card>
+      ) : (
+        <Card pad={18}>
+          <p style={{ margin: "0 0 12px", fontSize: 18, color: th.suave, lineHeight: 1.45 }}>
+            Você está só de visita: dá para ver tudo, mas para registrar partidas e momentos é preciso entrar.
+          </p>
+          <Btn kind="ok" onClick={() => go("login")}>Entrar com meu e-mail</Btn>
+        </Card>
+      )}
+
+      {/* ── Jogadores e perfis — só anfitrião ── */}
+      {isHost && (
+        <>
+          <Titulo>Jogadores e perfis</Titulo>
+          <p style={{ fontSize: 17, color: th.pageSub, margin: "0 0 12px" }}>
+            Como anfitrião, você define o perfil de cada jogador e pode remover quem não joga mais.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {players.map((p) => {
+              const papelAtual = p.papel || "convidado";
+              return (
+                <Card key={p.id} pad={14}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                    <Avatar p={p} size={40} />
+                    <div style={{ flex: 1 }}>
+                      <p style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{p.apelido}</p>
+                      <p style={{ margin: 0, fontSize: 15, color: th.suave }}>{p.nome}</p>
+                    </div>
+                    {p.id !== currentUserId && (
+                      <button onClick={() => setDelPlayer(p.id)} className="press"
+                        aria-label={`Remover ${p.apelido}`}
+                        style={{ width: 40, height: 40, borderRadius: 10, border: `1.5px solid ${th.linha}`,
+                          background: th.card, color: th.danger, fontSize: 17, cursor: "pointer",
+                          fontFamily: "inherit" }}>🗑</button>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {PAPEIS.map((pp) => (
+                      <button key={pp.id} onClick={() => updatePlayerPapel(p.id, pp.id)} className="press"
+                        style={{ flex: 1, minHeight: 38, borderRadius: 10, fontSize: 14, fontWeight: 700,
+                          cursor: "pointer", fontFamily: "inherit",
+                          border: `2px solid ${papelAtual === pp.id ? pp.cor : th.linha}`,
+                          background: papelAtual === pp.id ? th.chipBg : th.card,
+                          color: papelAtual === pp.id ? pp.cor : th.suave }}>
+                        {pp.label}
+                      </button>
+                    ))}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* ── Pedidos para entrar — admin e anfitrião ── */}
+      {isAdmin && (
+        <>
+          <Titulo>Pedidos para entrar no grupo</Titulo>
+          {pendentes.length === 0 ? (
+            <Card pad={18}><p style={{ margin: 0, fontSize: 18, color: th.suave }}>
+              Nenhum pedido no momento. Convide pelo link do WhatsApp — quem entrar aparece aqui para você aprovar.
+            </p></Card>
+          ) : pendentes.map((p) => (
+            <Card key={p.id} pad={16} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <Avatar p={p} size={46} />
+              <div style={{ flex: 1 }}>
+                <p style={{ margin: 0, fontSize: 19, fontWeight: 800 }}>{p.apelido}</p>
+                <p style={{ margin: 0, fontSize: 16, color: th.suave }}>{p.nome} · quer entrar</p>
+              </div>
+              <button className="press" aria-label={`Aprovar ${p.apelido}`} onClick={() => aprovarPendente(p)}
+                style={{ minWidth: 56, minHeight: 56, borderRadius: 14, border: "none", cursor: "pointer",
+                background: th.ok, color: "#FFF", fontSize: 22, fontFamily: "inherit" }}>✓</button>
+              <button className="press" aria-label={`Recusar ${p.apelido}`} onClick={() => {
+                setPendentes((ps) => ps.filter((x) => x.id !== p.id));
+                setToast("Pedido recusado");
+              }} style={{ minWidth: 56, minHeight: 56, borderRadius: 14, cursor: "pointer",
+                border: `1.5px solid ${th.linha}`, background: th.card, color: th.danger,
+                fontSize: 22, fontFamily: "inherit" }}>✕</button>
+            </Card>
+          ))}
+        </>
+      )}
+
+      <Titulo>Estilo do aplicativo</Titulo>
       <p style={{ fontSize: 17, color: th.pageSub, margin: "0 0 12px", lineHeight: 1.45 }}>
         Escolha como o app aparece para você. A escolha fica guardada no seu celular.
       </p>
       <ThemeSelector temaId={temaId} setTemaId={setTemaId} setToast={setToast} />
-
-      <Titulo>Pedidos para entrar no grupo</Titulo>
-      {pendentes.length === 0 ? (
-        <Card pad={18}><p style={{ margin: 0, fontSize: 18, color: th.suave }}>
-          Nenhum pedido no momento. Convide pelo link do WhatsApp — quem entrar aparece aqui para você aprovar.
-        </p></Card>
-      ) : pendentes.map((p) => (
-        <Card key={p.id} pad={16} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <Avatar p={p} size={46} />
-          <div style={{ flex: 1 }}>
-            <p style={{ margin: 0, fontSize: 19, fontWeight: 800 }}>{p.apelido}</p>
-            <p style={{ margin: 0, fontSize: 16, color: th.suave }}>{p.nome} · quer entrar</p>
-          </div>
-          <button className="press" aria-label={`Aprovar ${p.apelido}`} onClick={() => {
-            setPendentes((ps) => ps.filter((x) => x.id !== p.id));
-            setPlayers((pl) => [...pl, p]);
-            setToast(`${p.apelido} entrou no grupo ✓`);
-          }} style={{ minWidth: 56, minHeight: 56, borderRadius: 14, border: "none", cursor: "pointer",
-            background: th.ok, color: "#FFF", fontSize: 22, fontFamily: "inherit" }}>✓</button>
-          <button className="press" aria-label={`Recusar ${p.apelido}`} onClick={() => {
-            setPendentes((ps) => ps.filter((x) => x.id !== p.id));
-            setToast("Pedido recusado");
-          }} style={{ minWidth: 56, minHeight: 56, borderRadius: 14, cursor: "pointer",
-            border: `1.5px solid ${th.linha}`, background: th.card, color: th.danger,
-            fontSize: 22, fontFamily: "inherit" }}>✕</button>
-        </Card>
-      ))}
 
       <Titulo>Fundo do grupo</Titulo>
       <p style={{ fontSize: 17, color: th.pageSub, margin: "0 0 12px" }}>
@@ -1087,10 +1420,82 @@ function Config({ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes,
         <p style={{ margin: 0, fontSize: 18, lineHeight: 1.5 }}>
           Código do grupo: <strong style={{ fontSize: 22, letterSpacing: "0.2em" }}>TRCA</strong>
         </p>
+        <p style={{ margin: "8px 0 0", fontSize: 16, color: th.suave, lineHeight: 1.45 }}>
+          Compartilhe o link abaixo. O convidado preenche nome e apelido, e o pedido aparece aqui para você aprovar.
+        </p>
         <div style={{ marginTop: 12 }}>
-          <Btn kind="ghost" onClick={() => setToast("Link copiado ✓")}>Copiar link de convite</Btn>
+          <Btn kind="ghost" onClick={() => {
+            const url = window.location.origin + "?join=TRCA";
+            if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
+            setToast("Link copiado ✓");
+          }}>Copiar link de convite</Btn>
         </div>
       </Card>
+
+      <Confirm open={!!delPlayer} titulo="Remover jogador?"
+        texto="O jogador sai do grupo. O histórico de partidas com ele permanece."
+        acao="Sim, remover"
+        onYes={() => { deletePlayer(delPlayer); setDelPlayer(null); setToast("Jogador removido"); }}
+        onNo={() => setDelPlayer(null)} />
+    </div>
+  );
+}
+
+/* ════════════════ Registro (acesso via link de convite ?join=TRCA) ════════════════ */
+function Registro({ go, setPendentes, setToast }) {
+  const th = useTheme();
+  const [nome, setNome] = useState("");
+  const [apelido, setApelido] = useState("");
+  const [enviado, setEnviado] = useState(false);
+
+  const Input = ({ label, value, onChange, placeholder }) => (
+    <div>
+      <label style={{ display: "block", fontSize: 17, fontWeight: 700, marginBottom: 6, color: th.pageText }}>
+        {label}
+      </label>
+      <input value={value} onChange={onChange} placeholder={placeholder}
+        style={{ width: "100%", minHeight: 56, borderRadius: 14, border: `2px solid ${th.linha}`,
+          fontSize: 19, padding: "0 16px", background: th.inputBg, color: th.tinta,
+          fontFamily: "inherit", outline: "none" }} />
+    </div>
+  );
+
+  if (enviado) {
+    return (
+      <div style={{ textAlign: "center", paddingTop: 60 }}>
+        <span style={{ fontSize: 64 }} aria-hidden="true">✅</span>
+        <h1 style={{ fontFamily: th.fontDisplay, fontWeight: th.displayWeight, fontSize: 30,
+          margin: "16px 0 8px", color: th.pageText }}>Pedido enviado!</h1>
+        <p style={{ fontSize: 18, color: th.pageSub, margin: "0 0 32px", lineHeight: 1.55 }}>
+          O anfitrião vai aprovar sua entrada em breve. Você já pode explorar o app enquanto aguarda.
+        </p>
+        <Btn kind="ghost" onClick={() => go("home")}>Ir para o app</Btn>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Header title="Entrar no grupo" />
+      <p style={{ fontSize: 18, color: th.pageSub, margin: "0 0 24px", lineHeight: 1.5 }}>
+        Preencha seus dados para pedir entrada no{" "}
+        <strong style={{ color: th.pageText }}>Cassino do Riva</strong>.
+        O anfitrião vai aprovar e você poderá jogar.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <Input label="Nome completo" value={nome}
+          onChange={(e) => setNome(e.target.value)} placeholder="Ex: João Silva" />
+        <Input label="Apelido (como vai aparecer no placar)" value={apelido}
+          onChange={(e) => setApelido(e.target.value)} placeholder="Ex: Joãozinho" />
+        <div style={{ marginTop: 8 }}>
+          <Btn kind="ok" disabled={!nome.trim() || !apelido.trim()} onClick={() => {
+            const req = { id: "p" + Date.now(), nome: nome.trim(), apelido: apelido.trim() };
+            setPendentes((ps) => [...ps, req]);
+            setEnviado(true);
+            setToast("Pedido enviado ✓");
+          }}>Solicitar entrada</Btn>
+        </div>
+      </div>
     </div>
   );
 }
