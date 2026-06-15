@@ -471,70 +471,56 @@ function Carregando() {
   );
 }
 
-/* ════════════════ Entrar (Magic Link) ════════════════ */
+/* ════════════════ Entrar (só com e-mail) ════════════════ */
 function Login({ go }) {
   const th = useTheme();
-  const { signInWithEmail, authMessage } = useAuth();
+  const { entrarComEmail } = useAuth();
   const [email, setEmail] = useState("");
-  const [enviando, setEnviando] = useState(false);
-  const [enviado, setEnviado] = useState(false);
+  const [entrando, setEntrando] = useState(false);
   const [erro, setErro] = useState("");
   const valido = /\S+@\S+\.\S+/.test(email);
 
-  const enviar = async () => {
-    setEnviando(true); setErro("");
-    const { error } = await signInWithEmail(email);
-    setEnviando(false);
-    if (error) setErro("Não conseguimos enviar agora. Confira o e-mail e tente de novo.");
-    else setEnviado(true);
+  const entrar = async () => {
+    setEntrando(true); setErro("");
+    const { error } = await entrarComEmail(email);
+    if (error) {
+      setEntrando(false);
+      const msg = (error.message || "").toLowerCase();
+      if (msg.includes("not confirmed"))
+        setErro("Estamos liberando os acessos — tente de novo em instantes.");
+      else if (msg.includes("signup") || msg.includes("not allowed"))
+        setErro("O cadastro de novos e-mails está desativado. Avise o anfitrião.");
+      else
+        setErro("Não conseguimos entrar agora. Confira o e-mail e tente de novo.");
+      return;
+    }
+    go("home"); // se for e-mail novo, a tela "Quem é você?" aparece automaticamente
   };
-
-  if (enviado) {
-    return (
-      <div style={{ textAlign: "center", paddingTop: 50 }}>
-        <span style={{ fontSize: 64 }} aria-hidden="true">📧</span>
-        <h1 style={{ fontFamily: th.fontDisplay, fontWeight: th.displayWeight, fontSize: 29,
-          margin: "16px 0 10px", color: th.pageText, lineHeight: 1.2 }}>
-          Enviamos um link para seu e-mail
-        </h1>
-        <p style={{ fontSize: 19, color: th.pageSub, lineHeight: 1.55, margin: "0 0 8px" }}>
-          Abra o e-mail <strong style={{ color: th.pageText }}>no mesmo celular</strong> e toque no link para entrar.
-        </p>
-        <p style={{ fontSize: 17, color: th.pageSub, lineHeight: 1.55, margin: "0 0 30px" }}>
-          Não chegou? Veja a caixa de spam ou peça de novo.
-        </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <Btn kind="ghost" onClick={() => setEnviado(false)}>Usar outro e-mail</Btn>
-          <Btn kind="ghost" onClick={() => go("home")}>Voltar ao app</Btn>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div>
       <Header title="Entrar" onBack={() => go("home")} />
       <p style={{ fontSize: 18, color: th.pageSub, margin: "0 0 20px", lineHeight: 1.5 }}>
-        Para registrar partidas, jogadores e momentos, entre com seu e-mail.
-        Você recebe um link e pronto — <strong style={{ color: th.pageText }}>sem senha</strong>.
-        Ver ranking e histórico não precisa entrar.
+        Digite seu e-mail para entrar e registrar partidas, jogadores e momentos.
+        Ver ranking e histórico não precisa de login.
       </p>
-      {(authMessage || erro) && (
+      {erro && (
         <Card style={{ marginBottom: 16, borderColor: th.accent, background: th.chipBg }}>
-          <p style={{ margin: 0, fontSize: 17, lineHeight: 1.5 }}>{erro || authMessage}</p>
+          <p style={{ margin: 0, fontSize: 17, lineHeight: 1.5 }}>{erro}</p>
         </Card>
       )}
       <label style={{ display: "block", fontSize: 17, fontWeight: 700, marginBottom: 6, color: th.pageText }}>
         Seu e-mail
       </label>
-      <input value={email} inputMode="email" autoComplete="email"
+      <input value={email} inputMode="email" autoComplete="email" type="email"
         onChange={(e) => setEmail(e.target.value)} placeholder="voce@exemplo.com"
+        onKeyDown={(e) => { if (e.key === "Enter" && valido && !entrando) entrar(); }}
         style={{ width: "100%", minHeight: 60, borderRadius: 14, border: `2px solid ${th.linha}`,
           fontSize: 19, padding: "0 16px", background: th.inputBg, color: th.tinta,
           fontFamily: "inherit", outline: "none" }} />
       <div style={{ marginTop: 18 }}>
-        <Btn kind="ok" disabled={!valido || enviando} onClick={enviar}>
-          {enviando ? "Enviando…" : "Enviar link de entrada"}
+        <Btn kind="ok" disabled={!valido || entrando} onClick={entrar}>
+          {entrando ? "Entrando…" : "Entrar"}
         </Btn>
       </div>
     </div>

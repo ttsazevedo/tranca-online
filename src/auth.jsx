@@ -4,64 +4,50 @@ import { supabase } from "./supabaseClient";
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
-// Mensagens amigáveis (sem jargão técnico) para erros que voltam na URL do link.
-function mensagemAmigavel(errorCode, errorDesc) {
-  const d = (errorDesc || "").toLowerCase();
-  if (d.includes("expired") || errorCode === "otp_expired")
-    return "Esse link de entrada expirou. Peça um novo link aqui embaixo — é rapidinho.";
-  if (d.includes("invalid") || d.includes("already"))
-    return "Esse link não funcionou aqui. Isso costuma acontecer quando ele é aberto em um aparelho diferente do que pediu. Peça um novo link e abra no mesmo celular.";
-  return "Não conseguimos entrar com esse link. Peça um novo aqui embaixo e abra no mesmo celular.";
+// Senha determinística derivada do e-mail: a mesma em qualquer aparelho, e o
+// usuário nunca a vê nem digita. É o que permite "entrar só com o e-mail".
+// DECISÃO DE FASE DE TESTE — ver docs/adr/0002-login-email-sem-verificacao.md.
+async function derivePassword(email) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`tranca:v1:${email}`));
+  const hex = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `Tr$${hex}`; // 67 chars — atende a qualquer política de senha
 }
 
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [authMessage, setAuthMessage] = useState("");
 
   useEffect(() => {
-    // 1) Erro vindo no hash da URL (link expirado / aberto em outro aparelho)
-    try {
-      const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-      const err = hash.get("error") || hash.get("error_code");
-      if (err) {
-        setAuthMessage(mensagemAmigavel(hash.get("error_code"), hash.get("error_description")));
-        // limpa o hash para não repetir a mensagem ao recarregar
-        history.replaceState(null, "", window.location.pathname + window.location.search);
-      }
-    } catch {}
-
-    // 2) Sessão atual + assinatura de mudanças
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
-      if (s) setAuthMessage(""); // entrou: some qualquer aviso de erro
-    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  const signInWithEmail = async (email) => {
-    setAuthMessage("");
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: { emailRedirectTo: window.location.origin },
-    });
-    return { error };
+  // E-mail vira a identidade: entra direto, sem senha visível e sem link de
+  // confirmação. 1º acesso de um e-mail novo cria a conta; acessos seguintes
+  // com o mesmo e-mail reconhecem e entram. (Exige "Confirm email" desligado.)
+  const entrarComEmail = async (emailRaw) => {
+    const email = (emailRaw || "").trim().toLowerCase();
+    const password = await derivePassword(email);
+    // 1) tenta entrar (e-mail já cadastrado)
+    let { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (!error) return { error: null };
+    // 2) não existe ainda → cria a conta
+    const { data, error: signErr } = await supabase.auth.signUp({ email, password });
+    if (signErr) return { error: signErr };
+    // se a sessão não vier no signUp, tenta logar
+    if (!data.session) {
+      const r = await supabase.auth.signInWithPassword({ email, password });
+      return { error: r.error };
+    }
+    return { error: null };
   };
 
   const signOut = () => supabase.auth.signOut();
 
-  const value = {
-    session,
-    user: session?.user || null,
-    loading,
-    authMessage,
-    clearAuthMessage: () => setAuthMessage(""),
-    signInWithEmail,
-    signOut,
-  };
+  const value = { session, user: session?.user || null, loading, entrarComEmail, signOut };
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

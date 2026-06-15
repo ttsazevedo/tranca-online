@@ -12,9 +12,5 @@ export const supabase = createClient(url, key, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    // Magic link no fluxo "implicit": o link traz o token e funciona ao abrir
-    // no mesmo navegador. detectSessionInUrl lê o token quando o link abre.
-    detectSessionInUrl: true,
-    flowType: "implicit",
   },
 });
