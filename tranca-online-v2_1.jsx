@@ -394,6 +394,16 @@ export default function App() {
       setToast(`${p.apelido} entrou no grupo ✓`);
     } catch { setToast("Entre para aprovar pedidos"); }
   };
+  // Anfitrião adiciona um jogador direto (sem login dele; ele vincula depois em "Quem é você?")
+  const criarJogador = async (nome, apelido) => {
+    if (!guard()) return;
+    try {
+      const row = await api.insertJogador({ nome, apelido, papel: "convidado" });
+      setPlayers((pl) => [...pl, { id: row.id, nome: row.nome, apelido: row.apelido || row.nome,
+        papel: row.papel, auth_user_id: null, foto_url: null }]);
+      setToast(`${apelido} adicionado ✓`);
+    } catch { setToast("Não foi possível adicionar o jogador"); }
+  };
   // Vínculo conta de login ↔ jogador (tela "Quem é você?")
   const vincularExistente = async (jogadorId) => {
     try { await api.claimJogador(jogadorId, user.id); await reloadPlayers(); go("home"); setToast("Pronto! Você entrou ✓"); }
@@ -420,7 +430,7 @@ export default function App() {
     detalhe: <Detalhe gameId={route.gameId} {...{ games, go, nomes }} />,
     momentos: <Momentos {...{ momentos, addMomento, byId, go }} />,
     config: <Config {...{ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes, players,
-      currentPlayer, isHost, isAdmin, updatePlayerPapel, deletePlayer, aprovarPendente, go, setToast }} />,
+      currentPlayer, isHost, isAdmin, updatePlayerPapel, deletePlayer, aprovarPendente, criarJogador, go, setToast }} />,
     registro: <Registro {...{ go, setPendentes, setToast }} />,
     login: <Login go={go} />,
   };
@@ -1275,11 +1285,15 @@ function ThemeSelector({ temaId, setTemaId, setToast }) {
 
 /* ════════════════ Ajustes ════════════════ */
 function Config({ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes, players,
-  currentPlayer, isHost, isAdmin, updatePlayerPapel, deletePlayer, aprovarPendente, go, setToast }) {
+  currentPlayer, isHost, isAdmin, updatePlayerPapel, deletePlayer, aprovarPendente, criarJogador, go, setToast }) {
   const th = useTheme();
   const { user, signOut } = useAuth();
   const [delPlayer, setDelPlayer] = useState(null);
+  const [novoNome, setNovoNome] = useState("");
+  const [novoApelido, setNovoApelido] = useState("");
   const currentUserId = currentPlayer?.id || null;
+  const addInput = { width: "100%", minHeight: 52, borderRadius: 12, border: `2px solid ${th.linha}`,
+    fontSize: 18, padding: "0 14px", background: th.inputBg, color: th.tinta, fontFamily: "inherit", outline: "none" };
 
   const PAPEIS = [
     { id: "convidado",     label: "Convidado",  cor: th.suave },
@@ -1326,6 +1340,23 @@ function Config({ feltro, setFeltro, temaId, setTemaId, pendentes, setPendentes,
           <p style={{ fontSize: 17, color: th.pageSub, margin: "0 0 12px" }}>
             Como anfitrião, você define o perfil de cada jogador e pode remover quem não joga mais.
           </p>
+          <Card pad={16} style={{ marginBottom: 12 }}>
+            <p style={{ margin: "0 0 10px", fontSize: 18, fontWeight: 800 }}>Adicionar jogador</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <input value={novoNome} onChange={(e) => setNovoNome(e.target.value)}
+                placeholder="Nome (ex: João Silva)" style={addInput} />
+              <input value={novoApelido} onChange={(e) => setNovoApelido(e.target.value)}
+                placeholder="Apelido (no placar)" style={addInput} />
+              <Btn kind="ok" style={{ minHeight: 52, fontSize: 17 }}
+                disabled={!novoNome.trim() || !novoApelido.trim()}
+                onClick={() => { criarJogador(novoNome.trim(), novoApelido.trim()); setNovoNome(""); setNovoApelido(""); }}>
+                Adicionar ao grupo
+              </Btn>
+            </div>
+            <p style={{ margin: "10px 0 0", fontSize: 15, color: th.suave, lineHeight: 1.4 }}>
+              Entra como convidado. Quando essa pessoa fizer login, é só escolher o próprio nome na tela “Quem é você?”.
+            </p>
+          </Card>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {players.map((p) => {
               const papelAtual = p.papel || "convidado";
